@@ -1,0 +1,6 @@
+#!/bin/sh
+# npm bin shim：解析自身软链后，转发到包内的 install.sh。
+# 两个坑：① npm 把 bin 软链到 node_modules/.bin/，直接取 dirname 会指错目录；
+#        ② npm 打包会剥掉 install.sh 的执行位（装出来是 0644），必须显式用 bash 调用。
+self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+exec bash "$(dirname "$self")/../install.sh" "$@"

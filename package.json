@@ -1,0 +1,74 @@
+{
+  "name": "dsh-archive-replica",
+  "version": "0.1.4",
+  "description": "Replicate — and revoke — the DeepSeek Harness Session archive set across machines through a folder your own file-sync tool already replicates",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "dsh-archive-replica-install": "bin/dsh-archive-replica-install"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "src",
+    "tests",
+    "install.sh",
+    "unarchive-session.sh",
+    "README.md",
+    "README.en.md",
+    "PUBLISH.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "session",
+    "archive",
+    "sync"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liuxunchen/dsh-archive-replica.git"
+  },
+  "homepage": "https://github.com/liuxunchen/dsh-archive-replica#readme",
+  "bugs": {
+    "url": "https://github.com/liuxunchen/dsh-archive-replica/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-atomic-write": "*",
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/dsh-workspace": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-atomic-write": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-workspace": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  }
+}

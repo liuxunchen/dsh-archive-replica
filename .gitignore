@@ -1,0 +1,8 @@
+node_modules/
+*.tgz
+*.log
+.DS_Store
+.npm-cache/
+
+# 维护者内部记录（不发布；仅随文件同步到自己的镜像目录）
+internal-docs/
