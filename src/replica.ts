@@ -87,12 +87,12 @@ export interface ArchiveReplicaRequest {
   readonly directory: string
   /** Stable machine id naming this machine's vault document. */
   readonly machineId: string
-  /** Keep looking for other machines' publications while the plugin runs. */
-  readonly watch?: boolean
-  /** Interval between directory scans, in milliseconds. */
-  readonly pollIntervalMs?: number
+  /** Keep looking for other machines' publications while the plugin runs; omission takes the default. */
+  readonly watch?: boolean | undefined
+  /** Interval between directory scans, in milliseconds; omission takes the default. */
+  readonly pollIntervalMs?: number | undefined
   /** This machine's fingerprint; see {@link ArchiveReplicaSpec.fingerprint}. */
-  readonly fingerprint?: string
+  readonly fingerprint?: string | undefined
 }
 
 /** Construction options of {@link ArchiveReplica}. */

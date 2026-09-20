@@ -27,49 +27,35 @@ This plugin closes both gaps:
 **Prerequisite**: your machines share one folder through the same file-sync tool (Nutstore, Dropbox, Syncthing, …), and each machine's `~/.dsh/sessions` also points into a synced folder, so Session logs travel too.
 The shared folder must live inside the sync tool's **registered sync scope** — tools like Nutstore do not sync directories merely created under their mount root.
 
-```bash
-git clone https://github.com/<owner>/dsh-archive-replica.git ~/dsh-archive-replica
-
-bash ~/dsh-archive-replica/install.sh --enable \
-  --vault "$HOME/path/to/shared/sync/folder" \
-  --machine "$(hostname -s)"
-
-# then restart dsh
-```
-
-- `--vault`: the folder every machine shares and the sync tool replicates (required, must exist)
-- `--machine`: this machine's unique id, naming its document — **must differ per machine**; defaults to `hostname -s`.
-  ⚠️ **Two machines sharing a hostname is common** — that case must name one explicitly (`--machine laptop`).
-  Documents record the publisher's machine fingerprint; `install.sh` refuses to install when the existing document under that id came from another machine, and the plugin warns at startup
-- Installs to `~/.dsh/plugins/archive-replica` plus a resolution symlink at `~/.dsh/profiles/node_modules/@local/dsh-archive-replica` and an enabling row in the profile patch
-- Check: `bash install.sh --check`; update: `git pull && bash install.sh`, then restart dsh
-
-Or install it from npm (equivalent; the bin lands as `dsh-archive-replica-install`):
+This package is an **installable DSH bundle** (`package.json` declares `dsh.bundle.patch`): once installed into a profile the plugin row ships with the package, so no external installer is needed.
 
 ```bash
-npm install -g dsh-archive-replica
-dsh-archive-replica-install --enable --vault "$HOME/path/to/shared/sync/folder"
-
-# no global install (try it out, or no sudo) — use npx:
-npx -p dsh-archive-replica dsh-archive-replica-install --check
+dsh plugin --profile web add dsh-archive-replica      # install into the web profile
 ```
 
-Repeat the same three steps on every other machine (with a different `--machine`).
+The first use initializes the profile and appends this package to its bundle layers. **Installing is not enabling**: the bundle's row is `disabled: true` (see [Configuration](#configuration)) because it needs your shared folder and this machine's id. Restart dsh to take effect.
+
+Machines still on the older **external replica** (`@local/dsh-archive-replica` + `install-archive-replica.sh`): drop that enabling row (id `archive-replica-external`) and the `~/.dsh/plugins/archive-replica` / `~/.dsh/profiles/node_modules/@local/dsh-archive-replica` links, and use the row from [Configuration](#configuration) instead; the data files `archive-<machineId>.json` stay as they are. To go back to the external replica (say, a machine without pnpm), `git clone` this repository and run `bash install.sh --enable --vault <shared folder> --machine <this machine's id>`, or `npm i -g dsh-archive-replica` and check it with `dsh-archive-replica-install --check` — the two routes are independent, so **never enable both**.
 
 ## Configuration
 
-The enabling row lives in `~/.dsh/profiles/<profile>/cordis.patch.yml`:
+The bundle ships this row (`cordis.patch.yml`, `disabled: true`); enabling it means overriding that row **by id** in your own profile patch. Replicating the archive set has no sensible default without you — an enabled row with placeholder values would look configured while replicating nothing — so these values are yours to state:
 
 ```yaml
-- insert:
-    - id: archive-replica-external
-      name: '@local/dsh-archive-replica'
-      config:
-        directory: /absolute/path/to/shared/folder
-        machineId: desktop         # must differ per machine
-        # watch: true              # keep scanning the folder (default true)
-        # pollIntervalMs: 2000     # scan interval in ms (default 2000)
+# ~/.dsh/profiles/<profile>/cordis.patch.yml
+- id: archive-replica
+  disabled: false
+  config:
+    directory: '/absolute/path/to/shared/folder'   # required, must exist (inside the sync scope)
+    machineId: desktop                             # required, must differ per machine; quote digits
+    # watch: true                                  # keep scanning the folder (default true)
+    # pollIntervalMs: 2000                         # scan interval in ms (default 2000)
 ```
+
+- `directory`: the folder every machine shares and the sync tool replicates (required, must already exist)
+- `machineId`: this machine's unique id, naming its document — **must differ per machine**. ⚠️ Two machines sharing a hostname is common, so never copy a placeholder like `desktop`; documents record the publisher's machine fingerprint and the plugin warns when one id shows up from another machine
+- An id-targeted override replaces the whole `config`, it does not deep-merge: state `machineId` again whenever you change `directory`
+- After a restart, the plugin logs one info line (folder, machineId, fingerprint) — that is how you confirm it is live
 
 ## Revoking an archive
 

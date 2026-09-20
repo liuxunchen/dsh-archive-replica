@@ -1,0 +1,20 @@
+# dsh-archive-replica 的组合包层（dsh.bundle.patch 指向本文件）。
+#
+# 这一层只声明插件行本身，且默认禁用：归档集合同步需要「所有机器共享、且已被网盘复制」
+# 的目录与「每台机器都不相同」的 id，离开用户的配置就没有任何合理默认值——默认启用
+# 只会得到一个看起来配好、实则什么也没复制的插件（dsh 也会因为 directory 缺失而拒绝启动）。
+#
+# 启用 = 在自己的 profile patch（$DSH_HOME/profiles/<profile>/cordis.patch.yml）里按 id 覆盖本行：
+#
+#   - id: archive-replica
+#     disabled: false
+#     config:
+#       directory: '/绝对路径/共享目录'   # 必须是网盘「已注册同步范围」内的目录
+#       machineId: desktop               # 每台机器必须不同，纯数字也要加引号
+#
+# 按 id 覆盖的是 config 整体，不是深合并：directory 与 machineId 必须一起给出。
+# watch 与 pollIntervalMs 可省略，取插件默认值 true / 2000。
+- insert:
+    - id: archive-replica
+      name: dsh-archive-replica
+      disabled: true

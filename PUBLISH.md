@@ -69,3 +69,38 @@ DSH_HOME=/tmp/ar-home /tmp/ar-test/bin/dsh-archive-replica-install --enable \
 
 ⚠️ 已知坑：npm 打包会**剥掉非 `bin` 文件的执行位**（装出来的 `install.sh` 是 0644），所以
 `bin/dsh-archive-replica-install` 必须显式用 `bash` 调用它，不能直接 `exec`。
+
+## 4) 发布后自测（组合包路线，v0.1.5 起）
+
+组合包的真实路径是「装进 profile → 层被登记 → 按 id 覆盖启用」，隔离验证三步（不碰真实 `~/.dsh`）：
+
+```bash
+export PATH="$HOME/.local/share/pnpm:$PATH"          # dsh plugin 转发给 pnpm
+rm -rf /tmp/ar-home /tmp/ar-vault && mkdir -p /tmp/ar-home /tmp/ar-vault
+
+DSH_HOME=/tmp/ar-home dsh plugin --profile web add <包路径或包名>@<version>
+cat /tmp/ar-home/profiles/web/package.json           # bundles 里应出现 dsh-archive-replica，
+                                                    # 且全程不得出现 "declares no dsh.bundle"
+DSH_HOME=/tmp/ar-home dsh --profile web --dump-default-config   # 应出现「# == dsh-archive-replica」层标记
+
+cat > /tmp/ar-home/profiles/web/cordis.patch.yml <<'EOF'
+- id: archive-replica
+  disabled: false
+  config:
+    directory: '/tmp/ar-vault'
+    machineId: 'test-machine'
+EOF
+DSH_HOME=/tmp/ar-home dsh --profile web --dump-config  # 该行应为 disabled: false 且 patched by 指向 profile patch
+```
+
+## 5) 镜像同步（守护者本机）
+
+守护者机器上有一份 `sync-mirrors.sh`（不随本仓库发布），方向永远是 **真相（本仓库）→ 派生物**：
+
+- `~/prj/dsh/dsh-archive-replica`：随文件同步工具分发给装不上 git 的机器；
+- `~/Nutstore Files/Nutstore/dsh-sync/plugin/archive-replica`：**外置副本**（`@local/…`，供
+  `install-archive-replica.sh` 使用，v0.1.5 起为遗留路线）。
+
+它同步 `src/` 与 `README*`，**不同步 `lib/`**：外置副本自带 `lib/`，且外置副本的 `package.json`
+是另一份（包名 `@local/…`、`main: lib/index.js`），同步脚本不得覆盖它。改了本仓库的 `src/` 之后，
+外置那条遗留路线要单独重建它的 `lib/`，否则装进去的还是旧产物。

@@ -27,49 +27,36 @@ dsh 的会话归档状态**不在会话日志里**：
 **前置**：多台机器通过同一个文件同步工具（坚果云 / Dropbox / Syncthing…）共享一个目录，并且各自的 `~/.dsh/sessions` 也指向同步目录（会话日志才会跨机）。
 共享目录必须落在同步工具的**已注册同步范围**内——坚果云这类工具的挂载根下新建目录默认不同步。
 
-```bash
-git clone https://github.com/<owner>/dsh-archive-replica.git ~/dsh-archive-replica
-
-bash ~/dsh-archive-replica/install.sh --enable \
-  --vault "$HOME/path/to/shared/sync/folder" \
-  --machine "$(hostname -s)"
-
-# 然后重启 dsh
-```
-
-- `--vault`：所有机器共享、且被网盘复制的目录（**必填**，且必须已存在）
-- `--machine`：本机唯一标识，用于命名本机的文档；**每台机器必须不同**，默认取 `hostname -s`。
-  ⚠️ **多台机器 hostname 相同是常事** —— 那种情况下必须显式指定（如 `--machine laptop`）。
-  插件会在发布文档里记下本机指纹，`install.sh` 在检测到"同名文档来自另一台机器"时**直接拒绝安装**，插件启动时也会告警
-- 装到哪：`~/.dsh/plugins/archive-replica` ＋ `~/.dsh/profiles/node_modules/@local/dsh-archive-replica` 软链 ＋ profile patch 里的启用行
-- 自检：`bash install.sh --check`；更新：`git pull && bash install.sh`，再重启 dsh
-
-也可以用 npm 安装（等价；bin 会装成 `dsh-archive-replica-install`）：
+本包是**可安装的 DSH 组合包**（`package.json` 声明 `dsh.bundle.patch`）：安装进 profile 后，插件行由包自己携带，不再需要外置安装脚本。
 
 ```bash
-npm install -g dsh-archive-replica
-dsh-archive-replica-install --enable --vault "$HOME/path/to/shared/sync/folder"
-
-# 不想全局安装（试用/无 sudo）就用 npx：
-npx -p dsh-archive-replica dsh-archive-replica-install --check
+dsh plugin --profile web add dsh-archive-replica      # 装进 web profile（包名即参数）
 ```
 
-第二台机器重复同样三步（换 `--machine`）。
+首次使用会初始化 profile，并把本包追加进它的组合包层。**装完还要启用它**——组合包层里的插件行默认禁用（原因见下节「配置」），它需要你给出共享目录与本机 id。重启 dsh 即生效。
+
+沿用旧版**外置副本**（`@local/dsh-archive-replica` ＋ `install-archive-replica.sh`）的机器：删掉外置副本的启用行（id `archive-replica-external`）与 `~/.dsh/plugins/archive-replica`、`~/.dsh/profiles/node_modules/@local/dsh-archive-replica` 软链，改用上面「配置」一节里的那一行即可；数据文件 `archive-<machineId>.json` 不动。要迁回外置副本（例如机器装不上 pnpm）：`git clone` 本仓库后 `bash install.sh --enable --vault <共享目录> --machine <本机 id>`，或 `npm i -g dsh-archive-replica` 后用 `dsh-archive-replica-install --check` 自检——这两条路与本包各自独立，**不要同时启用**。
 
 ## 配置
 
-启用行写在 `~/.dsh/profiles/<profile>/cordis.patch.yml`：
+组合包自带这一行（`cordis.patch.yml`，默认 `disabled: true`），启用 = 在**自己的 profile patch** 里按 id 覆盖它。归档集合同步离开用户配置就没有合理默认值——默认启用只会得到一个"看起来配好了、其实什么都没复制"的插件，所以这行必须由你写成实际值：
 
 ```yaml
-- insert:
-    - id: archive-replica-external
-      name: '@local/dsh-archive-replica'
-      config:
-        directory: /共享目录/绝对路径
-        machineId: desktop         # 每台机器必须不同
-        # watch: true              # 是否持续扫描共享目录（默认 true）
-        # pollIntervalMs: 2000     # 扫描间隔，毫秒（默认 2000）
+# ~/.dsh/profiles/<profile>/cordis.patch.yml
+- id: archive-replica
+  disabled: false
+  config:
+    directory: '/共享目录/绝对路径'   # 必填，且必须已存在（落在网盘「已注册同步范围」内）
+    machineId: desktop               # 必填，每台机器必须不同；纯数字也要加引号
+    # watch: true                    # 是否持续扫描共享目录（默认 true）
+    # pollIntervalMs: 2000           # 扫描间隔，毫秒（默认 2000）
 ```
+
+- `directory`：所有机器共享、且被网盘复制的目录（**必填**，且必须已存在）
+- `machineId`：本机唯一标识，用于命名本机的文档；**每台机器必须不同**。
+  ⚠️ **多台机器 hostname 相同是常事** —— 别照抄 `desktop` 这类文档占位符；插件会在发布文档里记下本机指纹，一旦发现"同名文档来自另一台机器"就会告警
+- 按 id 覆盖的是 `config` **整体**，不是深合并：改了 `directory` 就得把 `machineId` 一起写上
+- 重启 dsh 后看日志里那一行 info（共享目录、machineId、指纹）确认插件起来了
 
 ## 撤销归档
 

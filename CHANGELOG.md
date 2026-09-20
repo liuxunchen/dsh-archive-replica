@@ -1,6 +1,22 @@
 # 更新日志（Changelog）
 
-本仓库的版本历史。npm 上现有 `0.1.0`、`0.1.1`、`0.1.2`（已 deprecate）、**`0.1.3`（latest）**。
+本仓库的版本历史。npm 上现有 `0.1.0`、`0.1.1`、`0.1.2`（已 deprecate）、`0.1.3`、`0.1.4`、
+**`0.1.5`（latest）**。
+
+## 0.1.5 — 2026-09-20
+
+- **升级为正式 DSH 组合包**：`package.json` 新增 `dsh.bundle.patch` 声明，仓库根新增
+  [`cordis.patch.yml`](cordis.patch.yml)。此后 `dsh plugin --profile <name> add dsh-archive-replica`
+  会自动把它登记进 profile 的组合包层，不再出现"只作为普通依赖安装、不激活任何层"的警告。
+- 组合包层**默认 `disabled: true`**：共享目录与本机 id 没有合理默认值，默认启用只会得到一个
+  "看起来配好了、其实什么都没复制"的插件（dsh 也会因 `directory` 缺失而拒绝启动）。启用方式是自己
+  的 profile patch 里按 id 覆盖该行并给出 `directory` 与 `machineId`（见 README「安装」）；按 id
+  覆盖的是 `config` 整体而非深合并，两个字段必须同时给出。
+- 这条组合包路线**取代外置副本**（`@local/dsh-archive-replica` + `install-archive-replica.sh`
+  + profile patch 的 `archive-replica-external` 行）。迁移：`dsh plugin remove dsh-archive-replica`
+  或删掉外置副本的启用行，改用本包自己的行；插件行 id 与包内插件名都是 `archive-replica`。
+  外置副本的 YAML 示例里那个 `machineId: desktop` 本就是文档占位符，注意别把占位符当成本机 id。
+- 补上 0.1.4 之后未发布的源码改动（`resolveReplicaSpec` 的可选字段处理与相应注释）。
 
 ## 0.1.4 — 2026-09-12
 

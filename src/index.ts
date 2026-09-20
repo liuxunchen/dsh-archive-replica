@@ -92,14 +92,16 @@ export function apply(ctx: Context, config: Config): void {
   )
   reportMachineIdCollision(logger, directory, config.machineId, fingerprint)
   reportRetiredSidecar(logger)
+  // Stated field by field rather than spread: the lint rule forbids spreading a
+  // value whose type may carry a prototype, and the resolved spec is explicit
+  // anyway. The Config schema fills both optional knobs, so `resolveReplicaSpec`
+  // receives this row's values and owns the defaults for direct callers.
   const replica = new ArchiveReplica({
-    // Stated field by field rather than spread: the lint rule forbids spreading a
-    // value whose type may carry a prototype, and the resolved spec is explicit anyway.
     ...resolveReplicaSpec({
       directory: config.directory,
       machineId: config.machineId,
-      ...(config.watch === undefined ? {} : { watch: config.watch }),
-      ...(config.pollIntervalMs === undefined ? {} : { pollIntervalMs: config.pollIntervalMs }),
+      watch: config.watch,
+      pollIntervalMs: config.pollIntervalMs,
       fingerprint,
     }),
     registry: ctx.workspaceRegistry,

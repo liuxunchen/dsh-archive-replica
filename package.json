@@ -1,6 +1,6 @@
 {
   "name": "dsh-archive-replica",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Replicate — and revoke — the DeepSeek Harness Session archive set across machines through a folder your own file-sync tool already replicates",
   "license": "MIT",
   "type": "module",
@@ -12,6 +12,11 @@
   "bin": {
     "dsh-archive-replica-install": "bin/dsh-archive-replica-install"
   },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "files": [
     "bin",
     "lib",
@@ -19,6 +24,7 @@
     "tests",
     "install.sh",
     "unarchive-session.sh",
+    "cordis.patch.yml",
     "README.md",
     "README.en.md",
     "PUBLISH.md",
