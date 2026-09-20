@@ -93,14 +93,21 @@ EOF
 DSH_HOME=/tmp/ar-home dsh --profile web --dump-config  # 该行应为 disabled: false 且 patched by 指向 profile patch
 ```
 
-## 5) 镜像同步（守护者本机）
+## 5) 镜像同步（维护者本机）
 
-守护者机器上有一份 `sync-mirrors.sh`（不随本仓库发布），方向永远是 **真相（本仓库）→ 派生物**：
+维护者机器上有一份 `sync-mirrors.sh`（**不随本仓库发布**，三处副本同内容），方向永远是
+**真相（本仓库）→ 派生物**：
 
-- `~/prj/dsh/dsh-archive-replica`：随文件同步工具分发给装不上 git 的机器；
-- `~/Nutstore Files/Nutstore/dsh-sync/plugin/archive-replica`：**外置副本**（`@local/…`，供
-  `install-archive-replica.sh` 使用，v0.1.5 起为遗留路线）。
+| 派生物 | 用途 |
+|---|---|
+| `~/prj/dsh/dsh-archive-replica` | 随文件同步工具分发给各机的**完整真相副本**（无 `.git`） |
+| `~/Nutstore Files/Nutstore/dsh-sync/plugin/archive-replica` | **外置副本**（`@local/…`），供 `install-archive-replica.sh` 使用；v0.1.5 起为遗留路线 |
 
-它同步 `src/` 与 `README*`，**不同步 `lib/`**：外置副本自带 `lib/`，且外置副本的 `package.json`
-是另一份（包名 `@local/…`、`main: lib/index.js`），同步脚本不得覆盖它。改了本仓库的 `src/` 之后，
-外置那条遗留路线要单独重建它的 `lib/`，否则装进去的还是旧产物。
+同步内容：`src/`、**`lib/`**、`cordis.patch.yml`（组合包层）、`README*`、`CHANGELOG.md`，第 1 个派生物
+是整树（排除 `.git/`、`node_modules/`、`*.tgz`）。
+
+**不覆盖**外置副本自己的 `package.json` 与它自己的 `cordis.patch.yml[.yaml]`：那是外置清单
+（包名 `@local/dsh-archive-replica`、`main: lib/index.js`），只属于外置路线，改它等于改那些机器的启用方式。
+
+⚠️ 只改 `src/` 而不重建 `lib/`，派生物就会停在旧构建上——本脚本同步 `lib/`，不会替你构建。
+发布流程走完（第 0 步重建 → 第 1 步 tag/push → 第 2 步 publish）之后再跑本脚本即可。
