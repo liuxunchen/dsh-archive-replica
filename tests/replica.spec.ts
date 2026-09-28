@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionId as SessionIdentity } from '@deepseek-ai/dsh-session'
 import type { DomainChanged } from '@deepseek-ai/dsh-storage-domain'
-import { WorkspaceUnknownSessionError } from '@deepseek-ai/dsh-workspace'
+import { WorkspaceActiveSessionError, WorkspaceUnknownSessionError } from '@deepseek-ai/dsh-workspace'
 import { ArchiveReplica } from '../src/replica.ts'
 import type { ArchiveRegistryPort, ArchiveReplicaLogger } from '../src/replica.ts'
 import { renderVaultDocument, vaultFileName } from '../src/vault.ts'
@@ -17,6 +17,8 @@ class FakeRegistry implements ArchiveRegistryPort {
   readonly attempts: string[] = []
   /** Ids whose archive attempt fails with an unrelated storage fault. */
   readonly failing = new Set<string>()
+  /** Ids running on this machine, which the registry refuses to archive. */
+  readonly running = new Set<string>()
 
   constructor(private readonly known: ReadonlySet<string>, archived: readonly string[] = []) {
     this.archived.push(...archived.map(id => SessionId(id)))
@@ -28,7 +30,10 @@ class FakeRegistry implements ArchiveRegistryPort {
 
   async archiveSession(sessionId: SessionIdentity): Promise<void> {
     this.attempts.push(String(sessionId))
-    if (!this.known.has(String(sessionId))) throw new WorkspaceUnknownSessionError(sessionId)
+    if (!this.known.has(String(sessionId))) throw new WorkspaceUnknownSessionError(sessionId, 'archive')
+    if (this.running.has(String(sessionId))) {
+      throw new WorkspaceActiveSessionError(sessionId, [{ kind: 'turn' as never }])
+    }
     if (this.failing.has(String(sessionId))) throw new Error('storage unit is unavailable')
     if (!this.archived.some(id => String(id) === String(sessionId))) this.archived.push(sessionId)
   }
@@ -177,12 +182,48 @@ describe('archive replica reconciliation', () => {
     const first = await replica.reconcile()
     const second = await replica.reconcile()
 
-    expect(first).toEqual({ imported: 0, skipped: 0, failed: 1, revoked: 0 })
-    expect(second).toEqual({ imported: 0, skipped: 0, failed: 1, revoked: 0 })
+    expect(first).toEqual({ imported: 0, skipped: 0, failed: 1, active: 0 })
+    expect(second).toEqual({ imported: 0, skipped: 0, failed: 1, active: 0 })
     // One attempt from the startup pass plus one per explicit pass; the same
     // failure is reported once.
     expect(registry.attempts).toEqual(['session-broken', 'session-broken', 'session-broken'])
     expect(logger.warnLines).toEqual(['session-broken: storage unit is unavailable'])
+    await replica.stop()
+  })
+
+  it('leaves a published Session that is running here to this machine, and says so once', async () => {
+    const directory = await vault()
+    await writeFile(join(directory, vaultFileName('beta')), renderVaultDocument(
+      'beta',
+      ['session-running', 'session-idle'],
+      '2026-09-11T00:00:00.000Z',
+    ))
+    const registry = new FakeRegistry(new Set(['session-running', 'session-idle']))
+    registry.running.add('session-running')
+    const logger = fakeLogger()
+    const replica = replicaOver(directory, registry, logger, { watch: false })
+
+    await replica.start()
+    const first = await replica.reconcile()
+    const second = await replica.reconcile()
+
+    // Archiving the busy one here would mean stopping this machine's work on
+    // another machine's decision. It is not a failure and not a miss: it stays
+    // out until the work stops, and the idle id is imported alongside it.
+    expect(first).toEqual({ imported: 0, skipped: 0, failed: 0, active: 1 })
+    expect(second).toEqual({ imported: 0, skipped: 0, failed: 0, active: 1 })
+    expect(registry.archived.map(String)).toEqual(['session-idle'])
+    // Retried every pass, reported once per busy period: three attempts for the
+    // busy id (startup plus two explicit passes), one warning.
+    expect(registry.attempts.filter(id => id === 'session-running')).toHaveLength(3)
+    const reported = logger.warnLines.filter(line => line.includes('are running here'))
+    expect(reported).toHaveLength(1)
+    expect(reported[0]).toContain('session-running (turn)')
+
+    // Once the work stops, the next pass archives it; the report clears with it.
+    registry.running.clear()
+    await expect(replica.reconcile()).resolves.toEqual({ imported: 1, skipped: 0, failed: 0, active: 0 })
+    expect(registry.archived.map(String)).toEqual(['session-idle', 'session-running'])
     await replica.stop()
   })
 })

@@ -55,7 +55,7 @@ class FakeRegistry implements ArchiveRegistryPort {
   }
   async archiveSession(sessionId: SessionIdentity): Promise<void> {
     this.attempts.push(String(sessionId))
-    if (!this.known.has(String(sessionId))) throw new WorkspaceUnknownSessionError(sessionId)
+    if (!this.known.has(String(sessionId))) throw new WorkspaceUnknownSessionError(sessionId, 'archive')
     this.archived.push(sessionId)
   }
 }
@@ -230,8 +230,8 @@ describe('archive replica unreadable documents', () => {
     const first = await replica.reconcile()
     const second = await replica.reconcile()
 
-    expect(first).toEqual({ imported: 1, skipped: 0, failed: 0, revoked: 0 })
-    expect(second).toEqual({ imported: 0, skipped: 0, failed: 0, revoked: 0 })
+    expect(first).toEqual({ imported: 1, skipped: 0, failed: 0, active: 0 })
+    expect(second).toEqual({ imported: 0, skipped: 0, failed: 0, active: 0 })
     expect(logger.warnLines).toEqual([`${vaultFileName('gamma')}: EBUSY: resource busy or locked`])
     expect(registry.archived.map(String)).toEqual(['session-live'])
     await replica.stop()
@@ -291,7 +291,7 @@ describe('archive replica disposal', () => {
     await replica.start()
     await replica.stop()
 
-    await expect(replica.reconcile()).resolves.toEqual({ imported: 0, skipped: 0, failed: 0, revoked: 0 })
+    await expect(replica.reconcile()).resolves.toEqual({ imported: 0, skipped: 0, failed: 0, active: 0 })
     await expect(replica.publish()).resolves.toBeUndefined()
     replica.observeDomainChange({
       domain: 'workspace',

@@ -1,7 +1,33 @@
 # 更新日志（Changelog）
 
-本仓库的版本历史。npm 上现有 `0.1.0`、`0.1.1`、`0.1.2`（已 deprecate）、`0.1.3`、`0.1.4`、
-**`0.1.5`（latest）**。
+本仓库的版本历史。npm 上现有 `0.1.0`、`0.1.1`、`0.1.2`（已 deprecate）、`0.1.3`、`0.1.4`、`0.1.5`；
+`0.1.6` 为当前工作树版本（尚未发布）。
+
+## 0.1.6 — 2026-09-28
+
+跟进 dsh 0.1.7 的归档管理（`unarchiveSession` / 归档准入活动检查 / 侧栏已归档筛选），插件**只做归档集合同步**。
+
+- **删除「撤销归档」这整条通道**：dsh 自己已经有取消归档（核心 `workspaceRegistry.unarchiveSession`，
+  侧栏「全部对话（显示已归档）」里也有入口），插件不再需要、也不应该替别的机器决定某个会话该不该归档。
+  - `unarchived-<machineId>.json` 撤销清单、`unarchive-session.sh`、`reportStaleRevocations`、
+    `republishOnRevocationChange` 与 `parseUnarchiveDocument` / `renderUnarchiveDocument` / `unarchiveFileName`
+    全部移除；读取时只对 `archive-*.json` 取并集。
+  - **共享目录里遗留的 `unarchived-*.json` 是惰性文件**，可以删掉，不影响插件。
+  - **行为变化**：取消归档不再跨机传播。某台机器取消归档后，别的机器仍保留该归档并在并集里发布它，
+    于是本机下次扫描会把它**再归档回来**（这正是"只做同步"的定义）。要让某台机器上也显示出来，
+    就在那台机器上取消一次。
+  - 插件现在**只做加法**：从不调用 `unarchiveSession`，从不从自己的发布文档里删 id。
+- **适配归档准入的活动检查**（`WorkspaceActiveSessionError`）：别的机器归档了某个会话、而它在本机正在跑时，
+  插件**不打断**本机的回合（不传 `stopActivity`），而是跳过该 id、日志里报一次，之后每次扫描重试；
+  工作停下来后它会自己归档进来。报告按「繁忙时段」去重：状态出现时报一行，全部停止后复位。
+- `reportRetiredSidecar` 更名为 `reportStaleSidecar`（返回类型 `StaleSidecarReport`）：警告文案改为
+  「它的启动器每次启动都会把那些 id 写回注册表，于是本机归档集合跟着这个文件走，而不是跟着 GUI」——
+  与撤销无关，仍是启动时的一行提醒。
+- **测试与开发环境可在独立 clone 里跑**：除组合守卫 `tests/loader-composition.spec.ts`（按相对路径
+  import dsh 源码树，只能在源码树里跑）外，`npx vitest run` 用宿主 dsh 自带的 `@deepseek-ai/*` 软链即可
+  跑通 38 个测试；`lib/index.js` 可用 `npx esbuild` 在仓库根直接重建。
+- 测试改动：`tests/unarchive.spec.ts` → `tests/sidecar.spec.ts`（只留侧车守卫），
+  `replica.spec.ts` 新增「本机在跑的发布被跳过且只报一次」用例，`ReconcileResult.revoked` → `active`。
 
 ## 0.1.5 — 2026-09-20
 

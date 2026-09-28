@@ -9,26 +9,21 @@
  * damaged files are ignored rather than fatal — a sync client may drop
  * anything into the directory, and a conflict copy is just one more document.
  *
- * The same directory also carries the unarchive journal:
- * `unarchived-<machine>.json` lists the Sessions one machine took back out of
- * the archive set. Archiving is one-way in the registry, so this journal is the
- * only channel that may shrink the union; every reader applies it after — and
- * over — the archive documents, which is what keeps a revoked Session from
- * being replayed back by another machine's publication.
+ * Unarchiving is deliberately absent here. The registry has had its own
+ * `unarchiveSession` since it grew the archive UI, so a Session is taken back
+ * out of the archive set on one machine, by hand, with no cross-machine
+ * channel: this module replicates the archive set and nothing else.
  *
  * @module @deepseek-ai/dsh-archive-replica/vault
  */
 
-/** Accepted vault document stamp, shared by archive and unarchive documents. */
+/** Accepted vault document stamp. */
 export const VAULT_DOCUMENT_VERSION = 1
 
 /** File-name prefix owned by this module. */
 export const VAULT_FILE_PREFIX = 'archive-'
 
-/** File-name prefix owned by the unarchive journal. */
-export const UNARCHIVE_FILE_PREFIX = 'unarchived-'
-
-/** File-name suffix shared by both document kinds. */
+/** File-name suffix owned by this module. */
 export const VAULT_FILE_SUFFIX = '.json'
 
 /** Accepted machine id: one path-safe file-name component. */
@@ -62,22 +57,6 @@ export interface VaultDocument {
   readonly fingerprint?: string
 }
 
-/** One parsed unarchive document. */
-export interface UnarchiveDocument {
-  /** Document stamp; documents with any other stamp are foreign. */
-  readonly version: number
-  /** Machine that wrote the document, for operators reading the directory. */
-  readonly machine: string
-  /** Publication time of this document, ISO-8601. */
-  readonly updatedAt: string
-  /**
-   * Sessions this machine took out of the archive set, in its own revocation
-   * order. A revocation is global: every machine drops these ids from what it
-   * imports and from what it publishes.
-   */
-  readonly unarchivedSessionIds: readonly string[]
-}
-
 /**
  * Whether a machine id is usable as a vault file-name component.
  * @param machineId - Candidate machine id.
@@ -97,23 +76,24 @@ export function vaultFileName(machineId: string): string {
 }
 
 /**
- * File name a machine publishes its unarchive journal under.
- * @param machineId - Validated machine id.
- * @returns the journal file name.
- */
-export function unarchiveFileName(machineId: string): string {
-  return `${UNARCHIVE_FILE_PREFIX}${machineId}${VAULT_FILE_SUFFIX}`
-}
-
-/**
  * Parse one vault document, discarding foreign content.
  * @param text - Raw file content.
  * @returns the archived Session ids, or undefined when the document is foreign
  *   or damaged and must be ignored.
  */
 export function parseVaultDocument(text: string): readonly string[] | undefined {
-  const parsed = parseDocument(text, 'archivedSessionIds')
-  return parsed === undefined ? undefined : filterSessionIds(parsed.ids)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+  const document = parsed as Record<string, unknown>
+  if (document.version !== VAULT_DOCUMENT_VERSION) return undefined
+  const ids = document.archivedSessionIds
+  if (!Array.isArray(ids)) return undefined
+  return ids.filter((id): id is string => typeof id === 'string' && SESSION_ID_TEXT.test(id))
 }
 
 /**
@@ -123,20 +103,18 @@ export function parseVaultDocument(text: string): readonly string[] | undefined 
  *   written before the field existed.
  */
 export function parseVaultFingerprint(text: string): string | undefined {
-  const parsed = parseDocument(text, 'archivedSessionIds')
-  const fingerprint = parsed?.document.fingerprint
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+  const document = parsed as Record<string, unknown>
+  if (document.version !== VAULT_DOCUMENT_VERSION) return undefined
+  if (!Array.isArray(document.archivedSessionIds)) return undefined
+  const fingerprint = document.fingerprint
   return typeof fingerprint === 'string' && fingerprint.length > 0 ? fingerprint : undefined
-}
-
-/**
- * Parse one unarchive document, discarding foreign content.
- * @param text - Raw file content.
- * @returns the revoked Session ids, or undefined when the document is foreign
- *   or damaged and must be ignored.
- */
-export function parseUnarchiveDocument(text: string): readonly string[] | undefined {
-  const parsed = parseDocument(text, 'unarchivedSessionIds')
-  return parsed === undefined ? undefined : filterSessionIds(parsed.ids)
 }
 
 /**
@@ -165,27 +143,6 @@ export function renderVaultDocument(
 }
 
 /**
- * Render one unarchive document.
- * @param machineId - Machine publishing the journal.
- * @param unarchivedSessionIds - Session ids to revoke, in revocation order.
- * @param updatedAt - Publication time, ISO-8601.
- * @returns the file content.
- */
-export function renderUnarchiveDocument(
-  machineId: string,
-  unarchivedSessionIds: readonly string[],
-  updatedAt: string,
-): string {
-  const document: UnarchiveDocument = {
-    version: VAULT_DOCUMENT_VERSION,
-    machine: machineId,
-    updatedAt,
-    unarchivedSessionIds,
-  }
-  return `${JSON.stringify(document, null, 2)}\n`
-}
-
-/**
  * Union Session id lists, keeping first-seen order and dropping invalid text.
  * @param lists - Lists in precedence order.
  * @returns the deduplicated union.
@@ -201,39 +158,4 @@ export function unionSessionIds(...lists: readonly (readonly string[])[]): strin
     }
   }
   return union
-}
-
-/**
- * Read the id array one document kind carries, rejecting the other kind and
- * every foreign shape. A document is identified by its own field, so an
- * archive document is never mistaken for a journal or the reverse.
- * @param text - Raw file content.
- * @param field - Id-array field this document kind must carry.
- * @returns the document and its raw id array, or undefined when this document
- *   is not that kind.
- */
-function parseDocument(
-  text: string,
-  field: 'archivedSessionIds' | 'unarchivedSessionIds',
-): { readonly document: Record<string, unknown>; readonly ids: readonly unknown[] } | undefined {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    return undefined
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-  const document = parsed as Record<string, unknown>
-  if (document.version !== VAULT_DOCUMENT_VERSION) return undefined
-  const ids = document[field]
-  return Array.isArray(ids) ? { document, ids } : undefined
-}
-
-/**
- * Keep only well-formed Session ids.
- * @param ids - Raw id values from a document.
- * @returns the accepted ids in document order.
- */
-function filterSessionIds(ids: readonly unknown[]): readonly string[] {
-  return ids.filter((id): id is string => typeof id === 'string' && SESSION_ID_TEXT.test(id))
 }

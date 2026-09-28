@@ -5,15 +5,18 @@
 ## 0) 准备
 
 - 工作树就是唯一真相：改代码改 `src/`，改文档改 `README*.md` / `CHANGELOG.md` / `docs/`；
-- 改了 `src/` 之后**必须重建 `lib/index.js`**（发布产物，esbuild 单文件 ESM bundle）：
+- 改了 `src/` 之后**必须重建 `lib/index.js`**（发布产物，esbuild 单文件 ESM bundle）。
+  仓库根有 `node_modules/@deepseek-ai/*` 软链时可直接构建（这些包就是宿主 dsh 自带的）：
 
   ```bash
-  cd /path/to/deepseek-harness        # 在 dsh 源码树里构建，才能解析 @deepseek-ai/*
-  pnpm exec esbuild <repo>/src/index.ts --bundle --format=esm --platform=node \
-    --target=node22 --external:@deepseek-ai/\* --outfile=<repo>/lib/index.js
+  npx esbuild src/index.ts --bundle --format=esm --platform=node --target=node22 \
+    --external:@deepseek-ai/\* --outfile=lib/index.js
   ```
 
-- `npm pack --dry-run` 看一眼包内容（`files` 白名单：`bin`、`lib`、`src`、`tests`、两个脚本、README、
+  在 dsh 源码树里构建等价（`cd /path/to/deepseek-harness` 后用 `pnpm exec esbuild <repo>/src/index.ts …`）。
+- 跑一遍测试与类型检查：`npx vitest run`（38 tests）、`npx tsc --noEmit`；
+  组合守卫 `tests/loader-composition.spec.ts` 只能在 dsh 源码树里跑（它按相对路径 import 源码树）。
+- `npm pack --dry-run` 看一眼包内容（`files` 白名单：`bin`、`lib`、`src`、`tests`、`install.sh`、README、
   PUBLISH、LICENSE）。
 
 ## 1) GitHub

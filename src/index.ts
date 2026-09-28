@@ -11,9 +11,10 @@
  *
  * One file per machine (`archive-<machineId>.json`) keeps every vault document
  * single-writer, so a sync client's conflict handling can never drop a
- * published archive. A companion journal (`unarchived-<machineId>.json`) carries
- * the opposite direction, so undoing a mistaken archive is not replayed back by
- * the union of everyone else's documents.
+ * published archive. That is the whole vocabulary: the replica imports archives
+ * and never removes one, because the registry has its own `unarchiveSession`
+ * for that — undoing an archive is a per-machine action in the archive UI, not
+ * something another machine's state may decide.
  *
  * @module @deepseek-ai/dsh-archive-replica
  */
@@ -61,9 +62,9 @@ export const Config: z<Config> = z.object({
   pollIntervalMs: z.number().step(1).min(1).default(2000),
 })
 
-/** One retired sidecar that still lists archives. */
-export interface RetiredSidecarReport {
-  /** Path of the retired file. */
+/** One stale sidecar that still lists archives. */
+export interface StaleSidecarReport {
+  /** Path of the stale file. */
   readonly path: string
   /** Ids the file still lists. */
   readonly count: number
@@ -91,7 +92,7 @@ export function apply(ctx: Context, config: Config): void {
     fingerprint,
   )
   reportMachineIdCollision(logger, directory, config.machineId, fingerprint)
-  reportRetiredSidecar(logger)
+  reportStaleSidecar(logger)
   // Stated field by field rather than spread: the lint rule forbids spreading a
   // value whose type may carry a prototype, and the resolved spec is explicit
   // anyway. The Config schema fills both optional knobs, so `resolveReplicaSpec`
@@ -189,25 +190,26 @@ export function reportMachineIdCollision(
 }
 
 /**
- * Warn when the retired script-side sidecar still lists archives.
+ * Warn when the stale script-side sidecar still lists archives.
  *
  * That launcher (`dsh-web-sync.mjs`) merged its own sidecar back into the
- * registry before every start, so a leftover file silently replay a
- * revocation — exactly the failure this plugin's unarchive journal exists to
- * prevent. One explicit line at startup is cheaper than rediscovering it.
+ * registry before every start, so a leftover file silently un-archives every
+ * Session listed in it on each restart — the one way an archived Session comes
+ * back without anyone asking. One explicit line at startup is cheaper than
+ * rediscovering it from a list that keeps reverting.
  * @param logger - Sink for the warning.
  * @param dshHome - Harness home; defaults to `$DSH_HOME`, then `~/.dsh`.
  * @returns what was reported, or undefined when the sidecar is absent or empty.
  */
-export function reportRetiredSidecar(
+export function reportStaleSidecar(
   logger: ArchiveReplicaLogger,
   dshHome: string = process.env.DSH_HOME ?? join(homedir(), '.dsh'),
-): RetiredSidecarReport | undefined {
-  const path = retiredSidecarPath(dshHome)
+): StaleSidecarReport | undefined {
+  const path = staleSidecarPath(dshHome)
   const count = listedIds(path)
   if (count === undefined || count === 0) return undefined
   logger.warn(
-    'retired script-side sidecar %s still lists %d archived Session(s): its launcher writes those ids back into the registry on every start, so a revocation there would be replayed. Delete the file, or stop launching dsh through dsh-web-sync.mjs.',
+    'stale script-side sidecar %s still lists %d archived Session(s): its launcher writes those ids back into the registry on every start, so the archive set here follows that file rather than the GUI. Delete the file, or stop launching dsh through dsh-web-sync.mjs.',
     path,
     count,
   )
@@ -220,7 +222,7 @@ export function reportRetiredSidecar(
  * @param dshHome - Harness home.
  * @returns the sidecar path, whether or not it exists.
  */
-function retiredSidecarPath(dshHome: string): string {
+function staleSidecarPath(dshHome: string): string {
   const sessions = join(dshHome, 'sessions')
   let real = sessions
   try {

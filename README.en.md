@@ -1,6 +1,6 @@
 # dsh-archive-replica
 
-Replicate — and revoke — the **Session archive set** of [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) across machines.
+Replicate the **Session archive set** of [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) across machines.
 
 [中文](README.md) · English
 
@@ -15,12 +15,9 @@ dsh keeps its archive state **out of the Session logs**:
 
 So a Session archived on machine A keeps showing up on machine B, whose Session logs have already synced — the archive state has no synchronizable artifact at all.
 
-Archiving is also **one-way** in dsh: the core exposes `archiveSession` and nothing that takes an id back out, so a mistaken archive has no undo.
+This plugin closes that gap and only that gap: every machine publishes its archive set as one document in a shared folder, and every read unions the folder.
 
-This plugin closes both gaps:
-
-- **Replication** — every machine publishes its archive set as one document in a shared folder, and every read unions the folder;
-- **Revocation** — the folder also carries an unarchive journal, and a revoked Session is never imported or published by any machine (a global undo).
+**Unarchiving is not this plugin's business**: dsh has its own (`workspaceRegistry.unarchiveSession`, plus the sidebar's "all conversations (show archived)" filter and its unarchive action), so taking a Session back is an action **on one machine** and does not travel — whichever machine should show it again unarchives it there.
 
 ## Install
 
@@ -57,43 +54,35 @@ The bundle ships this row (`cordis.patch.yml`, `disabled: true`); enabling it me
 - An id-targeted override replaces the whole `config`, it does not deep-merge: state `machineId` again whenever you change `directory`
 - After a restart, the plugin logs one info line (folder, machineId, fingerprint) — that is how you confirm it is live
 
-## Revoking an archive
+## Unarchiving (per machine)
 
-Archiving is one-way, so a revocation travels as data:
+Switch the sidebar filter to "all conversations (show archived)" or "archived only" and hit "unarchive" on that row;
+the core call is `workspaceRegistry.unarchiveSession(id)`, which drops the id from the registry-global archive set and the Session returns to its recorded position.
 
-```bash
-# 1) stop dsh first (Ctrl+C in the terminal running it)
-# 2) revoke (writes the journal, rewrites the local registry, strips every synced document, verifies)
-bash ~/dsh-archive-replica/unarchive-session.sh <session-id>
-# 3) restart dsh — the Session is back in the list
-```
-
-- A revocation is **global**: once one machine revokes, no machine archives that Session again. The plugin stops importing the id and drops it from its own publication, so another machine's union cannot replay the archive.
-- **On the other machine**: copy `unarchive-session.sh` over and run it with **no arguments** to apply the journals (it only rewrites that machine's registry and verifies).
-- Why revoking needs dsh stopped: the registry keeps the authoritative set in memory and writes it back, so an edit made while dsh runs is overwritten; and because the core has no unarchive path, the helper has to rewrite the registry offline.
+- **It does not travel**: unarchiving touches this machine only. The other machines still list that archive and publish it, so a union import **archives your copy back** on the next scan (or the next time this machine archives anything else). To see the Session on another machine, unarchive it there too.
+- This plugin **only ever adds**: it never calls `unarchiveSession` and never removes an id from its own document.
+- Archiving while work is running (dsh's new `WorkspaceActiveSessionError`): the plugin **does not interrupt** the turn running here. It skips that id, warns once, and retries on every scan — the archive lands by itself once the work stops.
+- A leftover `unarchived-<machineId>.json` journal from an older version is no longer read and can be deleted (see [CHANGELOG](CHANGELOG.md) 0.1.6).
 
 ## How it works
 
-Each machine writes two single-writer documents into the shared folder:
+Each machine writes one single-writer document into the shared folder:
 
 | File | Content |
 |---|---|
 | `archive-<machineId>.json` | this machine's archive set |
-| `unarchived-<machineId>.json` | ids this machine revoked (the unarchive journal) |
 
-Every read unions the folder, and **a journal outranks every publication**: a revoked id is never imported and never republished.
+Every read unions the folder and hands each id to dsh's own `workspace/archiveSession`; the plugin never writes the registry itself.
 Documents are identified by content, not by file name, so a sync client's conflict copy is unioned naturally while half-written or unrelated JSON is ignored.
 
 The plugin reads the folder in a scan loop (2 s by default) rather than subscribing to filesystem notifications, which are unreliable on sync mounts.
-Every archive write goes through dsh's own `workspace/archiveSession`; the plugin never writes the registry itself.
-
-When a revoked id is still present in this machine's archive set, the plugin reports it once (with the ids) and points at `unarchive-session.sh`.
+Archiving a Session here fires the registry's `domain/changed` event, which publishes immediately (within about a second) instead of waiting for the next scan.
 
 ## Known limitations
 
-- **Applying a revocation still needs one offline step per machine** (see above), because the registry exposes no unarchive path;
+- **Unarchiving is a per-machine action** and does not sync (see above);
 - **The shared folder is trusted input**: any JSON in it that parses as these documents is unioned, so it must be a folder you control;
-- Only the **archive set** travels — workspace order, accounting, and attachments stay machine-local;
+- Only the **archive set** travels — workspace order, accounting, attachments, and pins (`pinnedSessionIds`) stay machine-local;
 - A machine that does not mount this plugin publishes nothing, and its archives stay local;
 - **Two machines configured with one `machineId` cannot work**: they write the same document and overwrite each other's archive set. The plugin and the installer both detect this through the document's machine fingerprint, but the id itself stays the operator's responsibility.
 
@@ -101,26 +90,34 @@ When a revoked id is still present in this machine's archive set, the plugin rep
 
 The source is TypeScript, loaded directly by dsh's tsx launcher; the plugin depends only on Node built-ins and the `@deepseek-ai/*` packages the host provides — **no third-party runtime dependency**, which is what lets it live outside the dsh source tree.
 
-Tests must run inside a dsh source tree (they import dsh packages, which a standalone clone cannot resolve):
+```bash
+npx vitest run                                  # 38 tests: vault / replica / failure paths / row / fingerprint
+npx tsc --noEmit                                # type-check every source and test file
+```
+
+The one exception is `tests/loader-composition.spec.ts`, the real-composition guard (actual Loader + Include + workspace registry): it imports `workspace/src` and `storage-domain/tests` by relative path, so it **only runs inside a dsh source tree**:
 
 ```bash
 cd /path/to/deepseek-harness
-pnpm exec vitest run packages/workspace/archive-replica     # 41 tests
+pnpm exec vitest run packages/workspace/archive-replica/     # includes the composition guard
 ```
+
+Every other test needs only the `@deepseek-ai/*` packages the host dsh already ships: create `node_modules/@deepseek-ai/` at the repository root and symlink them in (`node_modules/` is already in `.gitignore`).
 
 `lib/index.js` is the published build artifact (a single-file ESM bundle from esbuild; `@deepseek-ai/*` stays
 external and is resolved by the host dsh at runtime). Rebuild it — and commit the result — after changing `src/`:
 
 ```bash
-cd /path/to/deepseek-harness        # build inside a dsh source tree so @deepseek-ai/* resolves
-pnpm exec esbuild <repo>/src/index.ts --bundle --format=esm --platform=node \
-  --target=node22 --external:@deepseek-ai/\* --outfile=<repo>/lib/index.js
+npx esbuild src/index.ts --bundle --format=esm --platform=node --target=node22 \
+  --external:@deepseek-ai/\* --outfile=lib/index.js
 ```
+
+(`pnpm exec esbuild` inside a dsh source tree produces the same bundle.)
 
 ## Documentation
 
 - [`docs/cross-machine-sync.zh.md`](docs/cross-machine-sync.zh.md) — how cross-machine sync works, plus
-  install, configuration, revocation and troubleshooting (Chinese)
+  install, configuration and troubleshooting (Chinese)
 - [`CHANGELOG.md`](CHANGELOG.md) — version history and fixes
 - [`PUBLISH.md`](PUBLISH.md) — maintainer release process (GitHub / npm)
 

@@ -1,20 +1,16 @@
 /**
  * The replica engine: publish this machine's archive set into a shared vault
- * directory and import the ids other machines published there.
+ * directory and import the archive sets other machines published there.
  *
- * Both directions run through the workspace registry's own `archiveSession`,
- * so replication is a consumer of the committed registry state and never a
- * second writer of it. Publishing is driven by the storage domain's
- * `domain/changed` event (the same event the Web client's workspace feed
- * folds), so a newly archived Session reaches the vault as soon as its write
- * is durable.
+ * One direction only. Every archive goes through the workspace registry's own
+ * `archiveSession`, so replication is a consumer of the committed registry
+ * state and never a second writer of it, and nothing here ever removes an id
+ * from the registry — unarchiving is the registry's own `unarchiveSession`,
+ * applied by hand on the machine that wants the Session back.
  *
- * The vault also carries an unarchive journal (`unarchived-<machine>.json`).
- * A revocation wins over every publication: a revoked id is never imported and
- * never republished, so one machine undoing a mistaken archive is not replayed
- * back by another machine's monotone union. The registry itself has no
- * unarchive path, so the plugin reports the ids it cannot unhide and leaves
- * applying them to the offline helper.
+ * Publishing is driven by the storage domain's `domain/changed` event (the same
+ * event the Web client's workspace feed folds), so a newly archived Session
+ * reaches the vault as soon as its write is durable.
  *
  * @module @deepseek-ai/dsh-archive-replica/replica
  */
@@ -26,14 +22,8 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionId as SessionIdentity } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-storage-domain'
 import type { DomainChanged } from '@deepseek-ai/dsh-storage-domain'
-import { WorkspaceUnknownSessionError, workspaceDomainState } from '@deepseek-ai/dsh-workspace'
-import {
-  parseUnarchiveDocument,
-  parseVaultDocument,
-  renderVaultDocument,
-  unionSessionIds,
-  vaultFileName,
-} from './vault.ts'
+import { WorkspaceActiveSessionError, WorkspaceUnknownSessionError, workspaceDomainState } from '@deepseek-ai/dsh-workspace'
+import { parseVaultDocument, renderVaultDocument, unionSessionIds, vaultFileName } from './vault.ts'
 
 /** The archive surface this engine consumes from the workspace registry. */
 export interface ArchiveRegistryPort {
@@ -44,6 +34,8 @@ export interface ArchiveRegistryPort {
    * @param sessionId - Session to archive.
    * @throws WorkspaceUnknownSessionError when no live or persisted Session has
    *   that id — the caller treats the id as belonging to another machine.
+   * @throws WorkspaceActiveSessionError when the Session has running work — the
+   *   caller leaves it to the machine that is running it.
    */
   archiveSession(sessionId: SessionIdentity): Promise<void>
 }
@@ -113,16 +105,12 @@ export interface ReconcileResult {
   readonly skipped: number
   /** Ids whose archive attempt failed and will be retried. */
   readonly failed: number
-  /** Ids skipped because the vault revokes them. */
-  readonly revoked: number
-}
-
-/** What one directory scan found. */
-export interface VaultState {
-  /** Every id the directory's archive documents publish, unioned. */
-  readonly published: readonly string[]
-  /** Every id the directory's unarchive journals revoke. */
-  readonly revoked: ReadonlySet<string>
+  /**
+   * Ids this machine is running right now, so the registry refused the archive.
+   * Retried on every later pass: the Session becomes archivable as soon as its
+   * work stops.
+   */
+  readonly active: number
 }
 
 /**
@@ -165,8 +153,7 @@ export class ArchiveReplica {
   private disposed = false
   private scanning = false
   private published: readonly string[] | undefined
-  private publishedRevocations: string | undefined
-  private reportedRevocations: string | undefined
+  private reportedActive = false
   private readonly reportedFailures = new Map<string, string>()
 
   /**
@@ -261,49 +248,38 @@ export class ArchiveReplica {
 
   /** One reconciliation pass, on the caller's chain slot. */
   private async reconcileNow(): Promise<ReconcileResult> {
-    if (this.disposed) return { imported: 0, skipped: 0, failed: 0, revoked: 0 }
-    const state = await this.readVaultState()
+    if (this.disposed) return { imported: 0, skipped: 0, failed: 0, active: 0 }
+    const published = await this.readPublishedIds()
     const archived = new Set<string>(this.registry.archivedSessionIds.map(String))
+    const running: string[] = []
     let imported = 0
     let skipped = 0
     let failed = 0
-    let revoked = 0
-    for (const id of state.published) {
-      // A revocation outranks every publication: without this the other
-      // machine's monotone union would replay the archive we just undid.
-      if (state.revoked.has(id)) {
-        revoked += 1
-        continue
-      }
+    for (const id of published) {
       if (archived.has(id)) continue
-      try {
-        await this.registry.archiveSession(SessionId(id))
+      const outcome = await this.archive(SessionId(id))
+      if (outcome.status === 'imported') {
         archived.add(id)
         imported += 1
-        this.reportedFailures.delete(id)
-      } catch (error) {
-        if (error instanceof WorkspaceUnknownSessionError) {
-          skipped += 1
-          continue
-        }
+      } else if (outcome.status === 'unknown') {
+        skipped += 1
+      } else if (outcome.status === 'active') {
+        running.push(outcome.report)
+      } else {
         failed += 1
-        this.reportOnce(id, error)
       }
     }
     if (imported > 0) {
       this.logger.info('archived %d Session(s) published by another machine', imported)
     }
-    this.reportStaleRevocations(state.revoked)
-    await this.republishOnRevocationChange(state.revoked)
-    return { imported, skipped, failed, revoked }
+    this.reportRunning(running)
+    return { imported, skipped, failed, active: running.length }
   }
 
   /** One publication, on the caller's chain slot. */
   private async publishNow(committed?: readonly string[]): Promise<void> {
     if (this.disposed) return
-    const { revoked } = await this.readVaultState()
-    const current = (committed ?? this.registry.archivedSessionIds.map(String))
-      .filter(id => !revoked.has(id))
+    const current = committed ?? this.registry.archivedSessionIds.map(String)
     if (this.published !== undefined && sameIds(this.published, current)) return
     const path = join(this.spec.directory, vaultFileName(this.spec.machineId))
     const content = renderVaultDocument(
@@ -317,84 +293,79 @@ export class ArchiveReplica {
   }
 
   /**
-   * Republish when the revocations changed even though the registry did not.
+   * Archive one published id, classifying what the registry answered.
    *
-   * A journal arrives from the file-sync tool, never from a registry write, so
-   * `domain/changed` does not fire for it. Without this check a revocation would
-   * reach this machine's document only the next time something else is archived.
-   * @param revoked - Ids the vault revokes in this pass.
+   * A Session another machine archived may be running here — a Session log
+   * reaches this machine, its turn does not. That one is left alone: the
+   * archive is retried on every later pass, so it lands by itself once the work
+   * stops, while archiving it now would mean stopping work on this machine on
+   * the strength of a decision taken on another one.
+   * @param sessionId - Published id to archive.
+   * @returns what the attempt did, naming the work in the way of an active one.
    */
-  private async republishOnRevocationChange(revoked: ReadonlySet<string>): Promise<void> {
-    const key = [...revoked].sort().join(',')
-    if (this.publishedRevocations === key) return
-    this.publishedRevocations = key
-    await this.publishNow()
+  private async archive(
+    sessionId: SessionIdentity,
+  ): Promise<{ readonly status: 'imported' | 'unknown' | 'failed' } | { readonly status: 'active'; readonly report: string }> {
+    try {
+      await this.registry.archiveSession(sessionId)
+      this.reportedFailures.delete(String(sessionId))
+      return { status: 'imported' }
+    } catch (error) {
+      if (error instanceof WorkspaceUnknownSessionError) return { status: 'unknown' }
+      if (error instanceof WorkspaceActiveSessionError) {
+        return { status: 'active', report: `${String(sessionId)} (${activityKinds(error)})` }
+      }
+      this.reportOnce(String(sessionId), error)
+      return { status: 'failed' }
+    }
   }
 
   /**
-   * Report a revocation this machine cannot apply by itself.
+   * Report the published ids this machine is running, once per busy period.
    *
-   * The registry only archives, so a revoked id that is still in this machine's
-   * archive set stays hidden until the offline helper rewrites the registry
-   * with dsh stopped. Reporting once per distinct set keeps a two-second scan
-   * loop from repeating the same line.
-   * @param revoked - Ids the vault revokes.
+   * Those ids are retried on every pass, so a line per pass would repeat every
+   * two seconds for as long as the work lasts. One line when the state appears —
+   * and nothing until every one of them has stopped — is what an operator can
+   * act on.
+   * @param running - Rendered ids this pass could not archive because they are
+   *   running here, each with the work that is in the way.
    */
-  private reportStaleRevocations(revoked: ReadonlySet<string>): void {
-    if (revoked.size === 0) {
-      this.reportedRevocations = undefined
+  private reportRunning(running: readonly string[]): void {
+    if (running.length === 0) {
+      this.reportedActive = false
       return
     }
-    const stale = this.registry.archivedSessionIds
-      .map(String)
-      .filter(id => revoked.has(id))
-      .sort()
-    if (stale.length === 0) {
-      this.reportedRevocations = undefined
-      return
-    }
-    const key = stale.join(',')
-    if (this.reportedRevocations === key) return
-    this.reportedRevocations = key
+    if (this.reportedActive) return
+    this.reportedActive = true
     this.logger.warn(
-      '%d Session(s) are revoked in the vault but still archived here; with dsh stopped run unarchive-session.sh to apply: %s',
-      stale.length,
-      key,
+      '%d Session(s) published by another machine are running here, so this machine keeps them visible until the work stops; each is retried on every scan: %s',
+      running.length,
+      running.join(', '),
     )
   }
 
   /**
-   * Read every document in the shared directory: archive documents contribute
-   * published ids, unarchive journals contribute revocations.
+   * Read every vault document in the shared directory and union their ids.
    *
    * Selection is by content, not by file name: a sync client's conflict copy or
    * a renamed document still carries archives, while a half-written or foreign
    * JSON file parses as nothing and is ignored.
-   * @returns the unioned ids and the revocation set.
+   * @returns the unioned ids, in first-seen order.
    */
-  private async readVaultState(): Promise<VaultState> {
+  private async readPublishedIds(): Promise<readonly string[]> {
     const entries = await readdir(this.spec.directory, { withFileTypes: true })
     const lists: string[][] = []
-    const revoked = new Set<string>()
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue
-      const path = join(this.spec.directory, entry.name)
       try {
-        const text = await readFile(path, 'utf8')
-        const archived = parseVaultDocument(text)
-        if (archived !== undefined) {
-          lists.push([...archived])
-          continue
-        }
-        const unarchived = parseUnarchiveDocument(text)
-        if (unarchived === undefined) continue
-        for (const id of unarchived) revoked.add(id)
+        const archived = parseVaultDocument(await readFile(join(this.spec.directory, entry.name), 'utf8'))
+        if (archived !== undefined) lists.push([...archived])
       } catch (error) {
         // A sync client can hold a file mid-transfer; the next event retries it.
         this.reportOnce(entry.name, error)
       }
     }
-    return { published: unionSessionIds(...lists), revoked }
+    return unionSessionIds(...lists)
   }
 
   /** Warn about one failure per subject, so a retry loop stays readable. */
@@ -416,6 +387,11 @@ export class ArchiveReplica {
 /** Compare two id lists positionally. */
 function sameIds(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((id, index) => id === right[index])
+}
+
+/** The activity families keeping one Session out of the archive set. */
+function activityKinds(error: WorkspaceActiveSessionError): string {
+  return error.activity.map(entry => entry.kind).join(', ')
 }
 
 /** Readable message of an unknown rejection. */

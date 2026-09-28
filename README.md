@@ -1,6 +1,6 @@
 # dsh-archive-replica
 
-把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的**会话归档状态**在多台机器之间同步，并支持**撤销归档**。
+把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的**会话归档状态**在多台机器之间同步。
 
 English · [README.en.md](README.en.md)
 
@@ -15,12 +15,10 @@ dsh 的会话归档状态**不在会话日志里**：
 
 于是 A 机归档一个会话后，B 机（会话日志已经同步过去）里它照旧显示——归档状态没有任何可同步的载体。
 
-而且归档在 dsh 里是**单向**的：核心只有 `archiveSession`，误归档之后没有撤销入口。
+本插件补上的就是**复制**这一件事：每台机器把本机归档集合写成共享目录里的一份文档，所有机器读取时取并集。
 
-本插件补上这两件事：
-
-- **复制**：每台机器把本机归档集合写成共享目录里的一份文档，所有机器读取时取并集；
-- **撤销**：共享目录里另有一份「撤销清单」，被撤销的会话不会再被任何机器导入或发布（全局撤销）。
+**取消归档不归本插件管**：dsh 自己已经有这个能力（`workspaceRegistry.unarchiveSession`，侧栏筛选「全部对话（显示已归档）」里也有取消归档入口），
+所以把会话取回来是**在本机做的一次操作**，不跨机传播——哪台机器想让它重新出现，就在那台机器上取消归档。
 
 ## 安装
 
@@ -58,43 +56,37 @@ dsh plugin --profile web add dsh-archive-replica      # 装进 web profile（包
 - 按 id 覆盖的是 `config` **整体**，不是深合并：改了 `directory` 就得把 `machineId` 一起写上
 - 重启 dsh 后看日志里那一行 info（共享目录、machineId、指纹）确认插件起来了
 
-## 撤销归档
+## 取消归档（本机操作）
 
-归档是单向的，所以撤销走「数据」这条路：
+在侧栏把筛选切到「全部对话（显示已归档）」或「仅显示已归档」，对着那一行点「取消归档」即可；
+核心接口就是 `workspaceRegistry.unarchiveSession(id)`，会把它从注册表全局归档集合里删掉，会话回到原来的位置。
 
-```bash
-# 1) 先在跑 dsh 的终端里 Ctrl+C 停掉 dsh
-# 2) 撤销（写撤销清单 + 清本机注册表 + 清所有同步文件 + 读回校验）
-bash ~/dsh-archive-replica/unarchive-session.sh <session-id>
-# 3) 重启 dsh —— 该会话重新出现在列表里
-```
-
-- 撤销是**全局**的：一台撤销，所有机器都不再归档该会话。插件读到清单后**不再导入**它、并从自己的发布里**剔除**它，所以别的机器不会把这次归档"播放"回来。
-- **另一台机器**：把 `unarchive-session.sh` 拷过去，**不带参数**跑一次即可应用撤销清单（它只清本机注册表并校验）。
-- 为什么撤销要停 dsh：注册表 `workspace.json` 的内存态才是权威，dsh 运行期间改文件会被内存态写回；而且核心没有取消归档接口，脚本必须离线重写注册表。
+- **不跨机传播**：取消归档只动本机。别的机器各自还留着这条归档，而且它们的发布里也有它，所以你把本机这一份取消掉之后，
+  下次扫描（或本机下次归档别的东西时）会被并集**再归档回来**。要让某台机器上也显示出来，就在那台机器上取消一次。
+- 本插件**只做加法**：它从不调用 `unarchiveSession`，从不从自己的文档里删 id。
+- 归档时若有工作在跑（dsh 新增的 `WorkspaceActiveSessionError`）：插件**不打断**本机正在跑的回合，而是跳过它、
+  在日志里报一次，之后每次扫描重试——工作停下来之后它会自己归档进来。
+- 历史遗留的 `unarchived-<machineId>.json` 撤销清单已不再被读取，可以删掉（见 [CHANGELOG](CHANGELOG.md) 0.1.6）。
 
 ## 工作原理
 
-共享目录里每台机器写两类文件，都是**单写者**：
+共享目录里每台机器写一份文件，**单写者**：
 
 | 文件 | 内容 |
 |---|---|
 | `archive-<machineId>.json` | 本机的归档集合 |
-| `unarchived-<machineId>.json` | 本机撤销过的 id（撤销清单） |
 
-读取时对整个目录取并集，**撤销清单优先**：任何清单撤销的 id 都不会被导入，也不会出现在本机的发布里。
+读取时对整个目录取并集，逐个交给 dsh 自己的 `workspace/archiveSession` 归档（插件从不直接写注册表）。
 文件按内容识别而非文件名，所以网盘产生的冲突副本会被自然并入，写了一半或不相干的 JSON 被忽略。
 
 插件用扫描循环（默认 2s）读目录，不依赖文件系统通知——网盘挂载点上的通知本就不可靠。
-所有归档写入都走 dsh 自己的 `workspace/archiveSession` 接口，插件从不直接写注册表。
-
-如果本机归档集合里仍留着已被撤销的 id，插件会在日志里报告一次（附 id 列表），提示你运行 `unarchive-session.sh`。
+本机新归档一个会话时，注册表的 `domain/changed` 事件会立刻触发一次发布（约 1 秒内），不用等下一次扫描。
 
 ## 已知限制
 
-- **把撤销应用到某台机器需要一次离线操作**（见上），因为注册表没有取消归档接口；
+- **取消归档是每台机器各自的动作**，不跨机同步（见上）；
 - **共享目录是被信任的输入**：其中任何能解析成本文档格式的 JSON 都会被并入，所以目录必须由你自己掌控；
-- 只同步**归档集合**：工作区顺序与记账、附件都不在同步范围内；
+- 只同步**归档集合**：工作区顺序与记账、附件、置顶（`pinnedSessionIds`）都不在同步范围内；
 - 未安装本插件的机器什么也不发布，它的归档只留本机；
 - **两台机器配了同一个 `machineId` 就无法正常工作**：它们写同一份文档、互相覆盖归档集合。插件与安装脚本都会检测并报错（依据是文档里的机器指纹），但 `machineId` 仍要你自己保证唯一。
 
@@ -102,25 +94,35 @@ bash ~/dsh-archive-replica/unarchive-session.sh <session-id>
 
 源码是 TypeScript，由 dsh 的 tsx 启动器直接加载；插件只依赖 Node 内建能力与宿主提供的 `@deepseek-ai/*` 包，**不依赖任何第三方运行时包**（这也是它能装在 dsh 源码目录之外的原因）。
 
-测试需要在 dsh 源码树里跑（它们 import 的是 dsh 的包，独立 clone 解析不到）：
+```bash
+npx vitest run                                  # 38 tests：vault / replica / 失败路径 / 插件行 / 指纹
+npx tsc --noEmit                                # 全部源码与测试的类型检查
+```
+
+唯一的例外是 `tests/loader-composition.spec.ts`——真实 Loader + Include + 真实 workspace 注册表的组合守卫，
+它按相对路径 import dsh 源码树里的 `workspace/src` 与 `storage-domain/tests`，**只能在 dsh 源码树里跑**：
 
 ```bash
 cd /path/to/deepseek-harness
-pnpm exec vitest run packages/workspace/archive-replica     # 41 tests
+pnpm exec vitest run packages/workspace/archive-replica/     # 含组合守卫
 ```
+
+其余测试所需的 `@deepseek-ai/*` 就是宿主 dsh 自带的那几个包：在仓库根建 `node_modules/@deepseek-ai/`
+把它们软链进来即可（`node_modules/` 已在 `.gitignore` 里）。
 
 `lib/index.js` 是发布用的构建产物（esbuild 打的单文件 ESM bundle；`@deepseek-ai/*` 保持外部引用，运行时由宿主的 dsh 提供）。
 改了 `src/` 之后要重新构建并随提交更新 `lib/`：
 
 ```bash
-cd /path/to/deepseek-harness        # 在 dsh 源码树里构建，才能解析 @deepseek-ai/*
-pnpm exec esbuild <repo>/src/index.ts --bundle --format=esm --platform=node \
-  --target=node22 --external:@deepseek-ai/\* --outfile=<repo>/lib/index.js
+npx esbuild src/index.ts --bundle --format=esm --platform=node --target=node22 \
+  --external:@deepseek-ai/\* --outfile=lib/index.js
 ```
+
+（在 dsh 源码树里也可以用 `pnpm exec esbuild`，两者产物一致。）
 
 ## 文档
 
-- [`docs/cross-machine-sync.zh.md`](docs/cross-machine-sync.zh.md) —— 原理、安装、配置、撤销与排障
+- [`docs/cross-machine-sync.zh.md`](docs/cross-machine-sync.zh.md) —— 原理、安装、配置与排障
 - [`CHANGELOG.md`](CHANGELOG.md) —— 版本历史与修复记录
 - [`PUBLISH.md`](PUBLISH.md) —— 维护者发布流程（GitHub / npm）
 
