@@ -82,6 +82,32 @@ dsh plugin --profile web add dsh-archive-replica      # 装进 web profile（包
 插件用扫描循环（默认 2s）读目录，不依赖文件系统通知——网盘挂载点上的通知本就不可靠。
 本机新归档一个会话时，注册表的 `domain/changed` 事件会立刻触发一次发布（约 1 秒内），不用等下一次扫描。
 
+## dsh 升级后的必做动作（重链农场）
+
+本插件与官方组合包一样，运行时依赖由 profile 的依赖农场 `~/.dsh/profiles/node_modules`
+（里面的软链指到 npm 宿主安装根）解析。**用新前缀重装 dsh 后农场不会自动跟随**：
+旧软链仍指向旧宿主，插件会加载旧版 `@deepseek-ai/dsh-workspace` 等包的类——与运行时宿主
+不是同一份模块实例，错误分类（`instanceof`）全部失效，`WorkspaceUnknownSessionError` /
+`WorkspaceActiveSessionError` 会被当成普通失败，表现为每 2 秒对每个不存在的会话 id 刷一条警告。
+
+升级后核对：每条软链的 `readlink` 目标应与当前 `dsh` 命令所在安装根一致：
+
+```bash
+NEW_ROOT="$(cd "$(dirname "$(readlink -f "$(command -v dsh)")")/.." && pwd)"
+find ~/.dsh/profiles/node_modules -type l | while read -r l; do
+  t="$(readlink "$l")"
+  case "$t" in
+    /usr/local/lib/node_modules/@deepseek-ai/dsh*)    # 旧宿主前缀，按你的旧前缀改这一行
+      nt="$NEW_ROOT${t#/usr/local/lib/node_modules/@deepseek-ai/dsh}"
+      [ -e "$nt" ] && ln -sfn "$nt" "$l"               # 新宿主不再自带的包（如 0.2.2 已去掉的 typebox）跳过
+      ;;
+  esac
+done
+```
+
+然后重启 dsh（重启后浏览器 Ctrl+Shift+R）。本插件 0.1.7 起经 dsh 0.2.2-rc.1 验证；
+0.2.2 的会话存储结构变化（会话目录裸 UUID、`session.v4.jsonl.zstd`）不影响本插件——它从不读会话文件，只走 `workspaceRegistry`。
+
 ## 已知限制
 
 - **取消归档是每台机器各自的动作**，不跨机同步（见上）；

@@ -78,6 +78,35 @@ Documents are identified by content, not by file name, so a sync client's confli
 The plugin reads the folder in a scan loop (2 s by default) rather than subscribing to filesystem notifications, which are unreliable on sync mounts.
 Archiving a Session here fires the registry's `domain/changed` event, which publishes immediately (within about a second) instead of waiting for the next scan.
 
+## After upgrading dsh (relink the dependency farm)
+
+Like official bundles, this plugin's runtime dependencies resolve through the profile dependency farm,
+`~/.dsh/profiles/node_modules`, whose symlinks point into the npm host installation root. **Reinstalling dsh
+under a new prefix does not follow those links**: they still point at the old host, so the plugin loads
+classes such as `WorkspaceUnknownSessionError` from the *old* host packages. Those are different module
+instances from the running host, every `instanceof` fails, and `unknown`/`active` outcomes degrade to
+`failed` — one warning per missing id every 2-second scan.
+
+After an upgrade, verify and relink (rewrite the target prefix to the new host root, skip packages the new
+host no longer ships), then restart dsh:
+
+```bash
+NEW_ROOT="$(cd "$(dirname "$(readlink -f "$(command -v dsh)")")/.." && pwd)"
+find ~/.dsh/profiles/node_modules -type l | while read -r l; do
+  t="$(readlink "$l")"
+  case "$t" in
+    /usr/local/lib/node_modules/@deepseek-ai/dsh*)    # replace with your old host prefix
+      nt="$NEW_ROOT${t#/usr/local/lib/node_modules/@deepseek-ai/dsh}"
+      [ -e "$nt" ] && ln -sfn "$nt" "$l"               # skip packages the new host dropped (e.g. typebox in 0.2.2)
+      ;;
+  esac
+done
+```
+
+Version 0.1.7 is verified against dsh 0.2.2-rc.1. The 0.2.2 session-layout change (bare-UUID session
+directories, `session.v4.jsonl.zstd`) does not affect this plugin: it never reads session files, it only
+talks to `workspaceRegistry`.
+
 ## Known limitations
 
 - **Unarchiving is a per-machine action** and does not sync (see above);

@@ -1,6 +1,6 @@
 {
   "name": "dsh-archive-replica",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Replicate the DeepSeek Harness Session archive set across machines through a folder your own file-sync tool already replicates",
   "license": "MIT",
   "type": "module",

@@ -1,7 +1,15 @@
 # 更新日志（Changelog）
 
-本仓库的版本历史。npm 上现有 `0.1.0`、`0.1.1`、`0.1.2`（已 deprecate）、`0.1.3`、`0.1.4`、`0.1.5`；
-`0.1.6` 为当前工作树版本（尚未发布）。
+本仓库的版本历史。npm 上现有 `0.1.0`、`0.1.1`、`0.1.2`（已 deprecate）、`0.1.3`、`0.1.4`、`0.1.5`、`0.1.6`；
+`0.1.7` 为当前工作树版本（尚未发布）。
+
+## 0.1.7 — 2026-11-07
+
+跟进 dsh **0.2.2-rc.1**（2026-11-04 发布）。**代码零改动**——本版只做兼容性验证、文档更新与升级指引；`lib/index.js` 与 0.1.6 相同。
+
+- **验证通过 dsh 0.2.2-rc.1**：隔离 `DSH_HOME` + 真实启动冒烟（临时 profile、依赖农场指向新宿主、临时 vault）——插件正常加载、正常发布 `archive-<machineId>.json`。0.2.2 的会话存储结构变化（会话目录由 `session-<uuid>` 改为裸 UUID、日志文件 `session.v3→v4.jsonl.zstd`）**不影响本插件**：插件从不读会话文件，只走 `workspaceRegistry`（`archivedSessionIds` / `archiveSession`），该注册表 API 在 0.2.2 未变（workspace 域 schema、`WorkspaceUnknownSessionError` / `WorkspaceActiveSessionError` 与 0.2.1 逐字节一致）。
+- **升级必做：重链 profile 依赖农场**（DSH 升级后插件"突然报错/行为异常"的根因）：DSH 组合包的运行时依赖由 `~/.dsh/profiles/node_modules`（依赖农场）解析；用新前缀重装 dsh 后，农场里指向旧宿主安装根的软链**不会自动跟随**，插件会把旧版宿主包的类（`WorkspaceUnknownSessionError` 等）加载进来——与运行时宿主不是同一份模块实例，`instanceof` 全部失效，`unknown`/`active` 被误判成 `failed`，表现为每 2 秒对每个本机不存在的会话 id 刷一条警告。升级后把农场全部软链的目标前缀重指新宿主安装根（新宿主不再自带的包跳过），然后重启 dsh；见 README「dsh 升级后的必做动作」。
+- **文档**：README / README.en 新增「dsh 升级后的必做动作（重链农场）」小节；本文件头部"0.1.6 尚未发布"订正。
 
 ## 0.1.6 — 2026-09-28
 
